@@ -1,4 +1,6 @@
 Watch utilies for incremental Bazel
 
 
-This repository is still work-in-progress.
+## Demo
+
+[![asciicast](https://asciinema.org/a/TRF0hxVrZOsWcCKo5LRGD7uFq.svg)](https://asciinema.org/a/TRF0hxVrZOsWcCKo5LRGD7uFq)

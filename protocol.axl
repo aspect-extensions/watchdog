@@ -1,0 +1,242 @@
+
+KIND = enum(
+    "NEGOTIATE",
+    "NEGOTIATE_RESPONSE", # TODO: should be NEGOTIATE_REPLY
+    "CAP",
+    "CAP_REPLY",
+    "INFO",
+    "EXIT",
+    "CYCLE",
+    "CYCLE_ABORT",
+    "CYCLE_STARTED",
+    "CYCLE_COMPLETED",
+    "CYCLE_ABORTED",
+    "CYCLE_FAILED",
+    "TRACE_SPAN_START",
+    "TRACE_SPAN_END"
+)
+
+# Direction: HOST -> IMPLEMENTOR
+NEGOTIATE = record(
+    kind=field(KIND, KIND("NEGOTIATE")),
+    versions=list[int],
+)
+
+# Direction: IMPLEMENTOR -> HOST
+NEGOTIATE_REPLY = record(
+    kind=field(KIND, KIND("NEGOTIATE_RESPONSE")),
+    version=int,
+)
+
+# Direction: HOST -> IMPLEMENTOR
+CAP = record(
+    kind=field(KIND, KIND("CAP")),
+    cap=dict[str, bool|dict],
+)
+
+# Direction: IMPLEMENTOR -> HOST
+CAP_REPLY = record(
+    kind=field(KIND, KIND("CAP")), # TODO: should be CAP_REPLY
+    enable_caps=dict[str, bool],
+)
+
+# Direction: HOST -> IMPLEMENTOR
+INFO = record(
+    kind=field(KIND, KIND("INFO")),
+    info=dict[str, str],
+)
+
+
+# Subtypes
+SOURCE_DELETED = None
+
+EMPTY_DIR = record(
+    is_directory=field(bool, True)
+)
+
+SOURCE_DIR = record(
+    is_directory=field(bool, True),
+    # children is a flat list of all the entries.
+    children=None | dict[str, dict|EMPTY_DIR|SOURCE_DELETED]
+)
+
+SOURCE_FILE = record(
+    mtime=int,
+    generated=field(bool, False)
+)
+
+
+# Direction: HOST -> IMPLEMENTOR
+CYCLE = record(
+    kind=field(KIND, KIND("CYCLE")),
+    cycle_id=int,
+    # optional, depending on the capability
+    scope=str|None,
+    # This cycle contains a full list of sources, diffing from an empty/null state
+    # Implementors should sign this of starting a fresh sandbox
+    is_fresh=bool,
+    sources=dict[str, SOURCE_DIR | SOURCE_FILE | EMPTY_DIR | SOURCE_DELETED]
+)
+
+# Direction: HOST -> IMPLEMENTOR
+# Abort inflight cycle
+# Possible responses to this command is:
+#   CYCLE_COMPLETED -> Means by the time abort was received the cycle was completed.
+#   CYCLE_ABORTED -> Implementor succesfully aborted the specified `cycle_id`.
+#   CYCLE_FAILED -> Where it MAY have attempted an abort but led to a failure,
+# semantics of this is identical to receiving a CYCLE_FAILED after CYCLE_STARTED.
+CYCLE_ABORT = record(
+    kind=field(KIND, KIND("CYCLE_ABORT")),
+    cycle_id=int,
+)
+
+# Direction: IMPLEMENTOR -> HOST
+CYCLE_STARTED = record(
+    kind=field(KIND, KIND("CYCLE_STARTED")),
+    cycle_id=int,
+)
+
+# Direction: IMPLEMENTOR -> HOST
+CYCLE_COMPLETED = record(
+    kind=field(KIND, KIND("CYCLE_COMPLETED")),
+    cycle_id=int,
+)
+
+# Direction: IMPLEMENTOR -> HOST
+CYCLE_ABORTED = record(
+    kind=field(KIND, KIND("CYCLE_ABORTED")),
+    cycle_id=int,
+)
+
+# Direction: IMPLEMENTOR -> HOST
+CYCLE_FAILED = record(
+    kind=field(KIND, KIND("CYCLE_FAILED")),
+    cycle_id=int,
+    description=str
+)
+
+# Direction: IMPLEMENTOR -> HOST
+EXIT = record(
+    kind=field(KIND, KIND("EXIT")),
+    description=str
+)
+
+
+TRACE_SPAN_START = record(
+    kind=field(KIND, KIND("TRACE_SPAN_START")),
+    cycle_id=int,
+    trace_id=str,
+    description=str,
+    metadata=dict
+)
+
+TRACE_SPAN_END = record(
+    kind=field(KIND, KIND("TRACE_SPAN_END")),
+    cycle_id=int,
+    trace_id=str,
+    description=str,
+    metadata=dict
+)
+
+MessageReply = eval_type(
+    NEGOTIATE_REPLY |
+    CAP_REPLY |
+    CYCLE_STARTED |
+    CYCLE_COMPLETED |
+    CYCLE_ABORTED |
+    CYCLE_FAILED |
+    EXIT |
+    TRACE_SPAN_START |
+    TRACE_SPAN_END
+)
+
+
+Message = eval_type(
+    NEGOTIATE |
+    CAP |
+    INFO |
+    CYCLE |
+    CYCLE_ABORT
+)
+
+ProtocolError = str | None
+
+
+PROTOCOL_SOCKET_PATH = "/tmp/axl-watch-protcol.sock"
+
+def _parse_message(raw: str) -> (ProtocolError, MessageReply | None):
+    message = json.decode(raw)
+    if "kind" not in message:
+        return "`kind` is not set", None
+    kind = message["kind"]
+    if kind not in KIND.values():
+         return f"unknown `kind` set: {kind}", None
+
+    message["kind"] = KIND(kind)
+    if kind == "NEGOTIATE_RESPONSE":
+        return None, NEGOTIATE_REPLY(**message)
+    elif kind == "CYCLE_STARTED":
+        return None, CYCLE_STARTED(**message)
+    elif kind == "CYCLE_COMPLETED":
+        return None, CYCLE_COMPLETED(**message)
+    else:
+        return f"TODO: parse {message}", None
+
+
+def _read(sockctx: struct) -> (ProtocolError, MessageReply):
+    rc = sockctx.readctx
+
+    for _ in range(2):
+        # check existing buffer for alreay read messages
+        next = rc["buffer"].find("}\n")
+        if next != -1:
+            current = rc["buffer"][:next+1]
+            rc["buffer"] = rc["buffer"][next+2:]
+            return _parse_message(current)
+        else:
+            # need to read more, go into a loop until we read enough.
+            for chunk in sockctx.stdout:
+                chunk = str(chunk)
+                rc["buffer"] += chunk
+                if rc["buffer"].find("}\n") != -1:
+                    break
+
+
+def _write(sockctx: struct, message: Message) -> ProtocolError:
+    sockctx.stdin.write(json.encode(message))
+
+def _negotiate(sockctx: struct) -> ProtocolError:
+    _write(sockctx, NEGOTIATE(versions = [0]))
+
+    err, message = _read(sockctx)
+    if err:
+        return err
+    if isinstance(message, NEGOTIATE_REPLY):
+        return None
+    else:
+        return "expected to receive NEGOTIATE_REPLY but got: %s" % message.kind
+
+def Protocol(ctx):
+    cmd = ctx.std.process.command("socat")
+    cmd.arg(f"UNIX-LISTEN:{PROTOCOL_SOCKET_PATH},unlink-early")
+    cmd.arg("STDIO")
+    cmd.stdin("piped")
+    cmd.stdout("piped")
+    cmd.stderr("inherit")
+    child = cmd.spawn()
+    stdin = child.stdin()
+    stdout = child.stdout()
+
+    sockctx = struct(
+        stdin = stdin,
+        stdout = stdout,
+        child = child,
+        readctx = dict(buffer = "")
+    )
+
+    return struct(
+        PROTOCOL_SOCKET_PATH = PROTOCOL_SOCKET_PATH,
+        negotiate = lambda: _negotiate(sockctx),
+        send = lambda message: _write(sockctx, message),
+        recv = lambda: _read(sockctx),
+    )

@@ -1,0 +1,123 @@
+load("@watchdog/watchdog.axl", "watchdog")
+load("@watchdog/protocol.axl", "CAP", "CYCLE", "SOURCE_FILE", "Protocol")
+
+def sleep(ctx: task_context, secs):
+    cmd = ctx.std.process.command("sleep")
+    cmd.arg(str(secs))
+    cmd.spawn().wait()
+
+def get_terminal_size(ctx: task_context):
+    cmd = ctx.std.process.command("stty")
+    cmd.arg("size")
+    cmd.stdout("piped")
+    output = cmd.spawn().wait_with_output()
+    rows, cols = output.stdout.strip().split(" ", 1)
+    return (int(rows), int(cols))
+
+
+def _spawn_gazelle(ctx, socket_path: str):
+    if not ctx.std.fs.exists("/tmp/aspect-gazelle"):
+        ctx.http().download(
+            url = "https://github.com/aspect-build/aspect-gazelle/releases/download/2025.40.99+1859933/gazelle-darwin_arm64_cgo",
+            output = "/tmp/aspect-gazelle",
+            mode = 0o777
+        ).block()
+    cmd = ctx.std.process.command("/tmp/aspect-gazelle")
+    cmd.env("ABAZEL_WATCH_SOCKET_FILE", socket_path)
+    cmd.arg("--progress")
+    cmd.stdin("piped")
+    return cmd.spawn()
+
+def watch_loop(ctx, apdu: dict, id: int, watchctx: struct):
+    out = ctx.std.io.stdout
+
+    def write_status(message):
+        pos = cols-len(message)-10
+        out.write(f"\033[2J\033[H\033[2;{pos}H\033[K")
+        out.write(message)
+        out.flush()
+        out.write("\033[E")
+        out.flush()
+
+
+    (rows, cols) = get_terminal_size(ctx)
+
+    files = apdu.get("files", [])
+    if files:
+        write_status("Changes detected, generating BUILD files.")
+
+        sleep(ctx, 1)
+
+
+        watchctx.protocol.send(
+            CYCLE(
+                cycle_id = id,
+                scope = None,
+                is_fresh = True,
+                sources = {
+                    file["name"]: SOURCE_FILE(mtime = 0)
+                    for file in files
+                }
+            )
+        )
+
+        watchctx.protocol.recv()
+        watchctx.protocol.recv()
+
+        sleep(ctx, 1)
+
+    # Clear the terminal
+    out.write("\033[2J\033[H")
+    out.write("\n")
+    out.flush()
+
+    build = ctx.bazel.build(
+         events = True,
+         bazel_flags = ["--isatty=1"],
+         *ctx.args.target
+    )
+
+    for event in build.events():
+        if event.kind == "progress":
+            out.write(event.payload.stdout)
+            out.write(event.payload.stderr)
+
+    out.write("\033[1F\033[6C")
+    out.write("Build finished.")
+    out.flush()
+
+    message = "🐶 Waiting for changes..."
+    pos = cols-len(message)-10
+    out.write(f"\033[2;{pos}H\033[K")
+    out.write(message)
+    out.flush()
+
+    return True
+
+
+
+
+def _dog_impl(ctx: task_context):
+    watchctx = struct(
+        protocol = Protocol(ctx),
+
+    )
+    gazelle = _spawn_gazelle(ctx, watchctx.protocol.PROTOCOL_SOCKET_PATH)
+    err = watchctx.protocol.negotiate()
+    if err:
+        print(err)
+        return 1
+
+
+    watchdog(ctx, watch_loop, watchctx)
+
+    # Wait for gazelle to exit.
+    gazelle.wait()
+
+
+watch = task(
+    implementation = _dog_impl,
+    args = {
+        "target": args.positional()
+    },
+)

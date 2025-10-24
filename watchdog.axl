@@ -1,0 +1,77 @@
+def sleep(ctx: task_context, secs):
+    cmd = ctx.std.process.command("sleep")
+    cmd.arg(str(secs))
+    cmd.spawn().wait()
+
+def get_terminal_size(ctx: task_context):
+    cmd = ctx.std.process.command("stty")
+    cmd.arg("size")
+    cmd.stdout("piped")
+    output = cmd.spawn().wait_with_output()
+    rows, cols = output.stdout.strip().split(" ", 1)
+    return (int(rows), int(cols))
+
+def watchdog(ctx: task_context, cb: typing.Callable, arg: typing.Any):
+    wstate = dict()
+
+    current_dir = ctx.std.env.current_dir()
+    cmd = ctx.std.process.command("watchman")
+    cmd.arg("watch-project")
+    cmd.arg(current_dir)
+    cmd.stdout("piped")
+    output = cmd.spawn().wait_with_output()
+
+    # Spawn a long-running watchman
+    cmd = ctx.std.process.command("watchman")
+    cmd.stdin("piped")
+    cmd.stdout("piped")
+    cmd.stderr("inherit")
+    cmd.arg("-j")
+    cmd.arg("--no-pretty")
+    cmd.arg("--server-encoding=json")
+    cmd.arg("-p")
+
+    wchild = cmd.spawn()
+
+    wstdin = wchild.stdin()
+
+    wstdin.write(
+        json.encode(
+            ["subscribe", current_dir, "axl-watchdog", {
+                "expression": [
+                    "allof",
+                    ["not", ["match", "bazel-*", "wholename"]],
+                    ["not", ["match", "target/*", "wholename"]],
+                    ["not", ["match", "target/**", "wholename"]],
+                    ["not", ["match", "**/target/**", "wholename"]],
+                    ["type", "f"]
+                ],
+                "empty_on_fresh_instance": True,
+                "dedup_results": True,
+                "defer_vcs": True,
+                "drop": ["axl-build"]
+            }]
+        )
+    )
+
+
+    buffer = ""
+    id = 0
+    for message in wchild.stdout():
+        buffer += str(message)
+        if buffer.endswith("}\n"):
+            apdu = json.decode(buffer)
+            buffer = ""
+            if apdu.get("state-enter", False):
+                continue
+            if apdu.get("state-leave", False):
+                continue
+            if apdu.get("subscribe", False):
+                continue
+            wstdin.write(json.encode(["state-enter", current_dir, "axl-build"]))
+            id += 1
+            _continue = cb(ctx, apdu, id, arg)
+            wstdin.write(json.encode(["state-leave", current_dir, "axl-build"]))
+            if not _continue:
+                wstdin.write(json.encode(["unsubscribe", current_dir, "axl-watchdog"]))
+                break
