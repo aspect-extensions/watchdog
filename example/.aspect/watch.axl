@@ -1,5 +1,5 @@
 load("@watchdog/watchdog.axl", "watchdog")
-load("@watchdog/protocol.axl", "CAP", "CYCLE", "SOURCE_FILE", "Protocol")
+load("@watchdog/protocol.axl", "CYCLE", "SOURCE_FILE", "Protocol")
 
 def sleep(ctx: task_context, secs):
     cmd = ctx.std.process.command("sleep")

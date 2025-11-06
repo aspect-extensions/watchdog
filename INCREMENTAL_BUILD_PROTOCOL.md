@@ -1,41 +1,16 @@
 # Incremental Build Protocol
 
-Owner: Şahin Yort
-Last edited time: October 23, 2025 7:54 PM
-Status: Proposed
-
-<aside>
-💡
-
-This documentation is not about Watch. It merely a ibazel protocol replacement.
-
-</aside>
+Owner: Şahin Yort, Jason Bedard
+Protocol Version: 0
 
 ## Summary
 
-The Incremental Build Protocol provides a replacement for ibazel's protocol with better control over the subprocess.
-
-Key points:
-
-- Protocol replacement focuses solely on build functionality, it does not specify how watching is done or how the protocol implemented.
-- It does not strive to be drop in replacement for existing iBazel protocol. However, it might recommend approaches for supporting both.
+The Incremental Build Protocol is a communication protocol for incremental builds, designed to coordinate between a host system (like a CLI) and an implementer (like a devserver or bundler). It addresses shortcomings of the ibazel protocol by enabling bidirectional communication, reporting of input changes, and avoiding the use of standard streams for communication.
 
 ## Terminology
 
-- Implementer: the binary accepting protocol messages, for example the js_run_devserver node process
+- Implementer: the binary accepting protocol messages, for example the `js_run_devserver` node process
 - Host: the system sending protocol messages to the implementer, for example the Aspect CLI
-
-## Background
-
-Currently, the only way to implement an incremental workflows, for example devservers, bundlers, is through the ibazel protocol. While it works well for basic use cases, it has several shortcomings that force implementers to create workarounds.
-
-Shortcomings include:
-
-- Protocol having no insights as what the implementer is doing, whether it finished, failed, or is still performing the task at hand. Simply because the protocol is designed for only one way communication.
-- Protocol does not support reporting of inputs that have changed, forcing implementer to invent filesystem diff pipelines.
-- Protocol uses stdin for communication which breaks some tools that expect TTY for stdin.
-
-These shortcomings simply can not be fixed with the existing ibazel protocol, since many of them require breaking changes to the protocol. Instead, we are drafting a complete new protocol that we call “INCREMENTAL BUILD PROTOCOL”
 
 ## Requirements
 
@@ -46,30 +21,120 @@ These shortcomings simply can not be fixed with the existing ibazel protocol, si
 
 ## Design
 
- Instead unix sockets are used for communication, the path to the UNIX socket is set by the `TBD_PROTOCOL_SOCKET` environment variable.
+Unix sockets are used for communication, the path to the UNIX socket is set by the `ABAZEL_WATCH_SOCKET_FILE` environment variable by the host before launching the implementer. Bidirectional communication is used over this socket to exchange JSON messages, events, commands etc.
 
-In order to indicate that the implementer supports this protocol, it will have to touch the file path set by the `TBD_PROTOCOL_STATUS` environment variable. This is similar to bazel test runners indicating [support for test sharding](https://bazel.build/reference/test-encyclopedia#test-sharding).
+In order to indicate that the implementer supports this protocol it must open a connection to the socket and send an initial `NEGOTIATE` message.
 
-For legacy reasons rules supporting both `ibazel` and `abazel` MAY add the `supports_abazel` to signal to the host that the target is capable of speaking abazel. presence of this tag implies  the host MAY prefer abazel over ibazel.
+A target MAY add the `supports_incremental_build_protocol` tag to signal to the host that the target is capable of speaking abazel but this is not required. This tag MAY be used by the host to determine if/when it should fallback to other mechanisms such as ibazel.
 
-### Overview
+## Workflow
 
+The workflow consists of the following steps:
+
+1. **Connect**: the implementer connects to the UNIX socket specified by the `ABAZEL_WATCH_SOCKET_FILE` environment variable.
+2. **Negotiation**: The host and implementer exchange `NEGOTIATE` messages to agree on the protocol version.
+3. **Cycles**: The host sends `CYCLE` messages to inform the implementer of changes in input files. The implementer responds with an initial `CYCLE_STARTED` followed by `CYCLE_COMPLETED|CYCLE_ABORTED|CYCLE_FAILED` on completion.
+4. **Exit**: The host or implementor can send an `EXIT` message to indicate the end of the session.
+
+## Message Definitions
+
+Messages are all JSON objects with a `kind` field indicating the message type.
+
+#### Negotiate
+
+Apon initial connect the host sends an initial `NEGOTIATE` message declaring the supported protocol versions:
 ```json
-  // the first message that the host and the implementor exchange.
-  // this message is the only stable message that is guaranteed to be
-  // stable across major versions of this protocol.
-  // host to implementor
   {
     "kind": "NEGOTIATE",
     "versions": [1,2,3],
   },
-  // implementor to host
+```
+
+The implementor responds with the selected version:
+```json
   {
-    "kind": "NEGOTIATE",
+    "kind": "NEGOTIATE_RESPONSE",
     "version": 3
   },
+```
 
+#### Cycle
 
+Once negotiation is complete the host will start sending `CYCLE` messages to inform the implementor of changes to the input files, including an initial `CYCLE` with the full set of input files.
+
+```json
+  {
+    "kind": "CYCLE",
+    "cycle_id": 1,
+    // List of sources that have either deleted or changed.
+    // TreeArtifacts are expanded automatically, if its empty there is
+    "sources": {
+        // Changed files
+			  "./path/to/foo": {
+					 "is_symlink": true,
+			  },
+			  "./path/to/bar": {
+					 "is_source": true,
+			  },
+        // REMOVED
+        "./path/to/deleted/source.txt": null,
+    }
+  }
+```
+
+The implementor should then send a `CYCLE_STARTED` to indicate work has started, followed by `CYCLE_FAILED|CYCLE_ABORTED|CYCLE_COMPLETED` messages in response to indicate the result of processing the cycle.
+
+```json
+  // Cycle started (implementor => host)
+  {
+    "kind": "CYCLE_STARTED",
+    "cycle_id":  1
+  },
+```
+
+```json
+  // Cycle ended successfully (implementor => host)
+  {
+    "kind": "CYCLE_COMPLETED",
+    "cycle_id": 1
+  }
+```
+
+```json
+  // Cycle aborted (implementor => host)
+  {
+    "kind": "CYCLE_ABORTED",
+    "cycle_id": 1
+  },
+```
+
+```json
+  // Cycle failed (implementor => host)
+  {
+    "kind": "CYCLE_FAILED",
+    "cycle_id":  1,
+    // optionally can set a reason.
+    "description": "bundling error abcd",
+    // cycle failed can send a follow up EXIT event to tell host that it must exit
+    // because the failure is non-recoverable.
+  },
+```
+
+At any time the host or implementor can send an `EXIT` message to indicate that it is going to exit.
+
+```json
+  // A generic exit notification to host that the implementor is going to exit now. (implementor <=> host)
+  {
+	  "kind": "EXIT",
+	  "description": "Webpack went into bad state and wants kill itself."
+  },
+```
+
+#### Unimplemented / Future
+
+Capabilities to opt-in to additional capabilities and features.
+
+```json
   // DIRECTION: host to implementor
   {
     "kind": "CAP",
@@ -108,77 +173,6 @@ For legacy reasons rules supporting both `ibazel` and `abazel` MAY add the `supp
     },
   },
 
-  // bazel lint --watch   uses `source_tree` scope
-  // bazel test //target  uses `target` scope
-  // bazel run  //target  uses `target` scope
-  // bazel run :gazelle   uses `source_tree` scope
-  // bazel run configure. uses `source_tree` scope
-
-
-  // DIRECTION: host to implementor
-  // Information about the incremental build
-  {
-    "kind": "INFO",
-    "info": {
-		   // in response to can_preserve_context:true
-       "context": "/my/root/dir/{hash}",
-       "target": "//my/bazel:target"
-
-       // Additional vendor specific attributes.
-       // Should be namespaced
-       "aspect:cli-version": "cli-1.2.3",
-    }
-  }
-
-  // DIRECTION: host to implementor
-
-  // Host will never send a subsequent CYCLE command until it receives one of
-  // the following notifications from the implementor;
-  // CYCLE_COMPLETED | CYCLE_FAILED | CYCLE_ABORTED
-  {
-    "kind": "CYCLE",
-    "cycle_id": 1,
-    "scope": "source_tree", // optional, depending on the capability
-    // This cycle contains a full list of sources, diffing from an empty/null state
-    // Implementors should sign this of starting a fresh sandbox
-    "is_fresh": true,
-    // List of sources that have either deleted or changed.
-    // TreeArtifacts are expanded automatically, if its empty there is
-    "sources": {
-		    // AN EMPTY DIRECTORY
-			  "./path/to/empty/tree-artifact": {
-			     "is_directory": true,
-			  },
-			  "./path/to/empty/tree-artifact": {
-					 "is_directory": true,
-					 // Children is a flat list of all the entries.
-					 "children": {
-					   ".github/FUNDING.yml": {},
-						 // An empty directory with no siblings
-					   "empty_dir": { "is_directory": true },
-						 "remove_file": null,
-					 }
-			  },
-			  // IF the directory containts some content, then it will be flattened
-			  // and expanded, semantics of treeartifact contents is identical of
-			  // other  files.
-			  // CHANGED
-			  "./path/to/empty/tree-artifact/file.txt": {
-			      "mtime": 127288228
-			      "generated": true,
-			  },
-			  // CHANGED
-        "./path/relative/to/runfiles/source.txt": {
-          // see `can_report_mtime` CAP above.
-          "mtime": 1272882282
-          // true | false or null if CAP_can_detect_generated_sources is false.
-          "generated": true,
-        },
-        // REMOVED
-        "./path/to/deleted/source.txt": null,
-    }
-  },
-
   // Abort inflight cycle
   {
 	  // Possible responses to this command is:
@@ -189,40 +183,6 @@ For legacy reasons rules supporting both `ibazel` and `abazel` MAY add the `supp
     "kind": "CYCLE_ABORT"
     "cycle_id":  1
   }
-
-
-  // DIRECTION: implementor -> host
-  // Cycle started
-  {
-    "kind": "CYCLE_STARTED",
-    "cycle_id":  1
-  },
-  // Cycle ended
-  {
-    "kind": "CYCLE_COMPLETED",
-    "cycle_id": 1
-  },
-  // Cycle aborted
-  {
-    "kind": "CYCLE_ABORTED",
-    "cycle_id": 1
-  },
-  // Cycle failed
-  {
-    "kind": "CYCLE_FAILED",
-    "cycle_id":  1,
-    // optionally can set a reason.
-    "description": "bundling error abcd",
-    // cycle failed can send a follow up EXIT event to tell host that it must exit
-    // because the failure is non-recoverable.
-  },
-
-  // DIRECTION: implementor -> host
-  // A generic exit notification to host that the implementor is going to exit now.
-  {
-	  "kind": "EXIT",
-	  "description": "Webpack went into bad state and wants kill itself."
-  },
 
   // DIRECTION: implementor -> host
   // about additional spans sent to the host for timing info.
@@ -255,11 +215,9 @@ sequenceDiagram
     participant CLI
     participant js_run_devserver
     participant fs-sandbox
-    CLI->>js_run_devserver: NEGOTIATE (v1,v2)
-    js_run_devserver->>CLI: NEGOTIATE (v1)
-    CLI->>js_run_devserver: CAP
-    js_run_devserver->>CLI: CAP
-    CLI->>js_run_devserver: ROOT (..files..)
+    CLI->>js_run_devserver: NEGOTIATE (1,2)
+    js_run_devserver->>CLI: NEGOTIATE_RESPONSE (1)
+    CLI->>js_run_devserver: CYCLE (..files..)
     js_run_devserver-->>fs-sandbox:
     CLI->>js_run_devserver: CYCLE (..diff..)
     js_run_devserver->>CLI: CYCLE_STARTED
@@ -276,11 +234,9 @@ sequenceDiagram
     participant webpack_devserver
     participant fs-sandbox
     participant webpack
-    CLI->>webpack_devserver: NEGOTIATE (v1,v2)
-    webpack_devserver->>CLI: NEGOTIATE (v1)
-    CLI->>webpack_devserver: CAP
-    webpack_devserver->>CLI: CAP
-    CLI->>webpack_devserver: ROOT (..files..)
+    CLI->>webpack_devserver: NEGOTIATE (1,2)
+    webpack_devserver->>CLI: NEGOTIATE_RESPONSE (1)
+    CLI->>webpack_devserver: CYCLE (..files..)
     webpack_devserver-->>fs-sandbox:
     webpack_devserver->>webpack: bundle
     CLI->>webpack_devserver: CYCLE (..diff..)
@@ -291,11 +247,3 @@ sequenceDiagram
     webpack_devserver->>CLI: CYCLE_COMPLETE
 
 ```
-
-### Preconditions / invariants
-
-### Alternatives Considered
-
-### Future work
-
-- live reload?
