@@ -1,5 +1,5 @@
 load("@watchdog/watchdog.axl", "watchdog")
-load("@watchdog/protocol.axl", "CYCLE", "SOURCE_FILE", "Protocol")
+load("@watchdog/protocol.axl", "CYCLE", "SOURCE_INFO", "Protocol", "WATCH_SCOPE")
 
 def sleep(ctx: task_context, secs):
     cmd = ctx.std.process.command("sleep")
@@ -52,15 +52,14 @@ def watch_loop(ctx, apdu: dict, id: int, watchctx: struct):
         watchctx.protocol.send(
             CYCLE(
                 cycle_id = id,
-                scope = None,
-                is_fresh = True,
                 sources = {
-                    file["name"]: SOURCE_FILE(mtime = 0)
+                    file["name"]: SOURCE_INFO(is_source = True)
                     for file in files
-                }
+                },
             )
         )
 
+        # CYCLE_STARTED then CYCLE_COMPLETED|CYCLE_FAILED|CYCLE_ABORTED
         watchctx.protocol.recv()
         watchctx.protocol.recv()
 
