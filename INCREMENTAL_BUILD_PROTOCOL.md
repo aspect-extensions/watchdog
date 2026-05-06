@@ -132,6 +132,17 @@ Once the handshake is complete the host drives the loop with `CYCLE` messages.
   }
 ```
 
+`sources` MAY be `null` to signal a **reset**: the host has lost its prior delta state (e.g. the file watcher restarted) and the implementor MUST treat the next cycle as a full sync rather than applying it as a delta. A `null` `sources` is not equivalent to an empty map — an empty map is "no changes since last cycle"; `null` is "an unknown number of changes may have occurred".
+
+```json
+  {
+    "kind": "CYCLE",
+    "cycle_id": 1,
+    "scope": "sources",
+    "sources": null
+  }
+```
+
 The implementor responds with `CYCLE_STARTED` to indicate work has begun, followed by exactly one of `CYCLE_COMPLETED | CYCLE_ABORTED | CYCLE_FAILED`.
 
 ```json

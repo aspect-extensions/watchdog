@@ -43,19 +43,24 @@ def watch_loop(ctx, apdu: dict, id: int, watchctx: struct):
     (rows, cols) = get_terminal_size(ctx)
 
     files = apdu.get("files", [])
-    if files:
-        write_status("Changes detected, generating BUILD files.")
+    is_fresh = apdu.get("is_fresh_instance", False)
+    if is_fresh or files:
+        if is_fresh:
+            write_status("Watcher (re)started, requesting fresh sync.")
+            sources = None
+        else:
+            write_status("Changes detected, generating BUILD files.")
+            sources = {
+                file["name"]: SOURCE_INFO(is_source = True)
+                for file in files
+            }
 
         sleep(ctx, 1)
-
 
         watchctx.protocol.send(
             CYCLE(
                 cycle_id = id,
-                sources = {
-                    file["name"]: SOURCE_INFO(is_source = True)
-                    for file in files
-                },
+                sources = sources,
             )
         )
 

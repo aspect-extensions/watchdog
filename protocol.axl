@@ -82,13 +82,15 @@ SOURCE_INFO = record(
 
 # Direction: HOST -> IMPLEMENTOR
 # `sources` is the set of changed sources. Map values of `None` indicate
-# deletion. `scope` is only sent when the scope capability has been
-# negotiated.
+# deletion. `sources` itself MAY be `None` to signal a fresh-instance
+# reset — the implementor MUST discard any prior delta state and treat
+# the next sync as a full seed, not a diff. `scope` is only sent when
+# the scope capability has been negotiated.
 CYCLE = record(
     kind=field(KIND, KIND("CYCLE")),
     cycle_id=int,
     scope=field(str|None, None),
-    sources=dict[str, SOURCE_INFO|SOURCE_DELETED],
+    sources=field(dict[str, SOURCE_INFO|SOURCE_DELETED]|None, None),
     trace_id=field(str|None, None),
     span_id=field(str|None, None),
 )
