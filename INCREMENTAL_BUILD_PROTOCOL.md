@@ -132,14 +132,14 @@ Once the handshake is complete the host drives the loop with `CYCLE` messages.
   }
 ```
 
-`sources` MAY be `null` to signal a **reset**: the host has lost its prior delta state (e.g. the file watcher restarted) and the implementor MUST treat the next cycle as a full sync rather than applying it as a delta. A `null` `sources` is not equivalent to an empty map — an empty map is "no changes since last cycle"; `null` is "an unknown number of changes may have occurred".
+A `CYCLE` MAY set `is_fresh_instance: true` to signal a **reset**: the host has lost its prior delta state (e.g. the file watcher restarted) and the implementor MUST treat the next cycle as a full sync rather than applying it as a delta. When `is_fresh_instance` is true, `sources` is unspecified — the implementor MUST NOT interpret it as a delta. This is distinct from sending an empty `sources` map, which means "no changes since last cycle".
 
 ```json
   {
     "kind": "CYCLE",
     "cycle_id": 1,
     "scope": "sources",
-    "sources": null
+    "is_fresh_instance": true
   }
 ```
 
