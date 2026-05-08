@@ -7,6 +7,7 @@ KIND = enum(
     "INFO",
     "EXIT",
     "CYCLE",
+    "CYCLE_RESET",
     "CYCLE_ABORT",
     "CYCLE_STARTED",
     "CYCLE_COMPLETED",
@@ -93,6 +94,20 @@ CYCLE = record(
     span_id=field(str|None, None),
 )
 
+# Direction: HOST -> IMPLEMENTOR (v2+)
+# Signals that the host has lost its delta state (e.g. the file watcher
+# restarted) and the receiver MUST recompute all state from scratch
+# rather than applying a delta. Applies to every negotiated scope — a
+# reset is not scope-specific. Lifecycle mirrors CYCLE: implementor
+# replies CYCLE_STARTED then exactly one of CYCLE_COMPLETED |
+# CYCLE_ABORTED | CYCLE_FAILED.
+CYCLE_RESET = record(
+    kind=field(KIND, KIND("CYCLE_RESET")),
+    cycle_id=int,
+    trace_id=field(str|None, None),
+    span_id=field(str|None, None),
+)
+
 # Direction: HOST -> IMPLEMENTOR
 # Abort an inflight cycle. Possible responses:
 #   CYCLE_COMPLETED -> the cycle was already completed when abort arrived.
@@ -164,6 +179,7 @@ Message = eval_type(
     CAPS_RESPONSE |
     INFO |
     CYCLE |
+    CYCLE_RESET |
     CYCLE_ABORT |
     EXIT
 )
@@ -176,7 +192,7 @@ ProtocolError = str | None
 PROTOCOL_SOCKET_PATH = "/tmp/axl-watch-protcol.sock"
 
 # Versions supported by this host, in priority order (most preferred first).
-SUPPORTED_VERSIONS = [1, 0]
+SUPPORTED_VERSIONS = [2, 1, 0]
 
 
 def _parse_message(raw: str) -> (ProtocolError, MessageReply | None):

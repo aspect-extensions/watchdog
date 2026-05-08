@@ -1,7 +1,7 @@
 # Incremental Build Protocol
 
 Owner: Şahin Yort, Jason Bedard
-Protocol Version: 1
+Protocol Version: 2
 
 ## Summary
 
@@ -32,7 +32,7 @@ A target MAY add the `supports_incremental_build_protocol` tag to signal to the 
 1. **Connect**: the implementer connects to the UNIX socket specified by the `ABAZEL_WATCH_SOCKET_FILE` environment variable.
 2. **Negotiation**: The host sends a `NEGOTIATE` message listing supported protocol versions in priority order. The implementer responds with `NEGOTIATE_RESPONSE` indicating the selected version.
 3. **Capability handshake (v1+)**: The implementer sends a `CAPS` message listing the capabilities it would like to enable. The host replies with `CAPS_RESPONSE` echoing the negotiated set (possibly clamped to what the host supports).
-4. **Cycles**: The host sends `CYCLE` messages to inform the implementer of changes in input files. The implementer responds with an initial `CYCLE_STARTED` followed by `CYCLE_COMPLETED|CYCLE_ABORTED|CYCLE_FAILED` on completion.
+4. **Cycles**: The host sends `CYCLE` messages to inform the implementer of changes in input files. On v2+, the host MAY send `CYCLE_RESET` instead when delta state has been lost and the implementer must recompute from scratch. The implementer responds with an initial `CYCLE_STARTED` followed by `CYCLE_COMPLETED|CYCLE_ABORTED|CYCLE_FAILED` on completion.
 5. **Exit**: The host or implementor can send an `EXIT` message to indicate the end of the session.
 
 ## Versioning
@@ -41,6 +41,7 @@ A target MAY add the `supports_incremental_build_protocol` tag to signal to the 
 |--------:|-------|
 | 0       | Legacy. No `CAPS` handshake. No scope. No OTEL. `is_fresh` flag on `CYCLE`. |
 | 1       | Adds `CAPS`/`CAPS_RESPONSE` handshake, `scope` and `otel` capabilities. OTEL `trace_id`/`span_id` MAY be set on any message when the `otel` capability is negotiated. |
+| 2       | Adds `CYCLE_RESET` for signaling that the host has lost its delta state and the implementor must recompute from scratch. |
 
 The host SHOULD list versions in `NEGOTIATE.versions` in priority order — most preferred first. The implementer SHOULD select the first listed version it supports.
 
@@ -129,6 +130,15 @@ Once the handshake is complete the host drives the loop with `CYCLE` messages.
         // REMOVED
       "./path/to/deleted/source.txt": null
     }
+  }
+```
+
+In place of a `CYCLE`, hosts and implementors that have negotiated v2+ MAY use `CYCLE_RESET` to signal that the host has lost its prior delta state (e.g. the file watcher restarted). The receiver MUST recompute all state from scratch rather than applying a delta. `CYCLE_RESET` carries no `sources` and no `scope` — a reset applies across every negotiated scope. The lifecycle mirrors `CYCLE`: the implementor replies with `CYCLE_STARTED` followed by exactly one of `CYCLE_COMPLETED | CYCLE_ABORTED | CYCLE_FAILED`. This is distinct from a `CYCLE` with an empty `sources` map, which means "no changes since last cycle".
+
+```json
+  {
+    "kind": "CYCLE_RESET",
+    "cycle_id": 1
   }
 ```
 
