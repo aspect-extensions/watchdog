@@ -1,5 +1,5 @@
 load("@watchdog/watchdog.axl", "watchdog")
-load("@watchdog/protocol.axl", "CYCLE", "SOURCE_INFO", "Protocol", "WATCH_SCOPE")
+load("@watchdog/protocol.axl", "CYCLE", "CYCLE_RESET", "SOURCE_INFO", "Protocol", "WATCH_SCOPE")
 
 def sleep(ctx: task_context, secs):
     cmd = ctx.std.process.command("sleep")
@@ -43,14 +43,11 @@ def watch_loop(ctx, apdu: dict, id: int, watchctx: struct):
     (rows, cols) = get_terminal_size(ctx)
 
     files = apdu.get("files", [])
-    is_fresh = apdu.get("is_fresh_instance", False)
-    if is_fresh or files:
-        if is_fresh:
-            write_status("Watcher (re)started, requesting fresh sync.")
-            cycle = CYCLE(
-                cycle_id = id,
-                is_fresh_instance = True,
-            )
+    reset = apdu.get("is_fresh_instance", False)
+    if reset or files:
+        if reset:
+            write_status("Watcher (re)started, requesting full re-sync.")
+            cycle = CYCLE_RESET(cycle_id = id)
         else:
             write_status("Changes detected, generating BUILD files.")
             cycle = CYCLE(
